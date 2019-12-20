@@ -1,1 +1,1 @@
-# midi-player-pipes
+# midi-player-streamly

@@ -53,9 +53,16 @@ packages:
       sha256: a26845b08d0d78894b1df747eceb3907515e9be208dd239c4a8083e7f6bf804e
   original:
     hackage: text-format-heavy-0.1.5.3@sha256:abbc5f0c4883328df4058cf2145820eaf41c35d1af9cdacc50fc2e4c2bd15dda,2755
+- completed:
+    hackage: wl-pprint-text-1.2.0.0@sha256:6fae1d18078cfd16303c18cede1f95ee866f01200fc6de03aa8c52855974a1c9,1127
+    pantry-tree:
+      size: 413
+      sha256: 55d882c2397c60585e95ec72bf363de20efea328cd39f46bfa9cf94ed88a2368
+  original:
+    hackage: wl-pprint-text-1.2.0.0@sha256:6fae1d18078cfd16303c18cede1f95ee866f01200fc6de03aa8c52855974a1c9,1127
 snapshots:
 - completed:
-    size: 524799
-    url: https://raw.githubusercontent.com/commercialhaskell/stackage-snapshots/master/lts/14/17.yaml
-    sha256: 1d72b33c0fc048e23f4f18fd76a6ad79dd1d8a3c054644098a71a09855e40c7c
-  original: lts-14.17
+    size: 437737
+    url: https://raw.githubusercontent.com/commercialhaskell/stackage-snapshots/master/nightly/2019/12/18.yaml
+    sha256: a3632676da94ec23078685057c5ba87f031ae5793d466591802d8df197e5e8e7
+  original: nightly-2019-12-18
