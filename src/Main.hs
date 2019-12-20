@@ -10,7 +10,6 @@ import           Control.Monad
 import           Control.Monad.State
 
 import qualified Data.ByteString.Lazy as BL
-import           Data.List (groupBy)
 import           Data.Maybe (catMaybes)
 import qualified Data.Text as T
 import qualified Data.Text.Read as TR
@@ -38,10 +37,7 @@ type MidiTimed = (Rational, MidiCmd)
 data UICmd = SelPort Int | LoadMidi ![MidiTimed] | PlayPause | Stop | Tick
   deriving Show
 
-newtype ClockCmd = ClockWait Rational
-  deriving Show
-
-data PlayerEvent = NoEvent | Clock !ClockCmd | Midi !MidiCmd
+data PlayerEvent = NoEvent | Clock | Midi ![MidiTimed]
   deriving Show
 
 midiFromPath :: String -> IO (Maybe MidiFile.T)
@@ -133,61 +129,61 @@ outputHandler
   -> PlayerEvent -> SerialT m ()
 outputHandler streamIdxVar streams ev =
   liftIO $ case ev of
-    Midi (Right msg) -> do
+    Midi cmds -> do
       streamIdx <- readMVar streamIdxVar
       let stream = streams !! streamIdx
+      mapM_ (handleMidiCmd stream) cmds
+    _ -> pure ()
+  where
+    handleMidiCmd stream (_, Right msg) = do
       eErr <- PM.writeShort stream (PM.PMEvent (PM.encodeMsg msg) 0)
       case eErr of
         Right _  -> pure ()
         Left err -> putStrLn $ "Error: " ++ show err
-    Midi (Left str) -> putStrLn ("Output: " ++ str)
-    _ -> pure ()
+    handleMidiCmd _ (_, Left str) = putStrLn ("Output: " ++ str)
 
 clockHandler
   :: MonadAsync m
-  => MVar UICmd -> PlayerEvent -> SerialT m ()
-clockHandler cmdVar ev =
+  => MVar UICmd -> PlayerEvent -> SerialT m PlayerEvent
+clockHandler cmdVar ev = do
   liftIO $ case ev of
-    Clock (ClockWait t) -> do
+    Midi (x:_) -> do
+      let t = fst x
       threadDelay (round $ t * (10^(6::Int)))
       putMVar cmdVar Tick
+    Clock -> putMVar cmdVar Tick
     _ -> pure ()
+  pure ev
 
 data MidiPlayerStatus
-  = Playing ![[MidiTimed]] ![[MidiTimed]]
-  | Paused  ![[MidiTimed]] ![[MidiTimed]]
-  | Stopped ![[MidiTimed]]
+  = Playing ![MidiTimed] ![MidiTimed]
+  | Paused  ![MidiTimed] ![MidiTimed]
+  | Stopped ![MidiTimed]
 
-midiPlayer
-  :: (MonadAsync m, MonadState MidiPlayerStatus m)
-  => SerialT m UICmd -> SerialT m PlayerEvent
-midiPlayer cmdStream = do
-  ev <- cmdStream
-  status <- get
-  (result, status') <- pure $ case (status, ev) of
-    (_, LoadMidi l) -> (notesOff, Stopped (groupBy (\a b -> fst a == fst b) l))
-    (Stopped l@((x:_):_)     , PlayPause) -> ([Clock $ ClockWait (fst x)], Playing l [])
-    (Paused  []     played, PlayPause) -> ([NoEvent], Stopped played)
-    (Paused  l@((x:_):_) played, PlayPause) -> ([Clock $ ClockWait (fst x)], Playing l played)
-    (Paused  remain played, Stop)      -> ([NoEvent], Stopped (combine remain played))
-    (Playing remain played, PlayPause) -> (notesOff, Paused remain played)
-    (Playing remain played, Stop)      -> (notesOff, Stopped (combine remain played))
-    (Playing []     played, Tick)      -> (notesOff, Stopped played)
-    (Playing (xs:xss) played, Tick) ->
-      let midiEvents = map (Midi . snd) xs
-          played' = xs:played
-          nextState l = case l of
-            []        -> (                 midiEvents ++ notesOff, Stopped $ reverse played')
-            ([]:yss)  -> nextState yss
-            ((y:_):_) -> ( midiEvents ++ [Clock $ ClockWait (fst y)], Playing xss played')
-      in nextState xss
-    _ -> ([NoEvent], status)
-  put status'
-  S.fromList result
+midiPlayerStep :: (PlayerEvent, MidiPlayerStatus) -> UICmd -> (PlayerEvent, MidiPlayerStatus)
+midiPlayerStep (_, status) cmd =
+  case (status, cmd) of
+    (_, LoadMidi l) -> (notesOff, Stopped l)
+    (Stopped remain        , PlayPause) -> (Clock, Playing remain [])
+    (Paused  []      played, PlayPause) -> (NoEvent, Stopped played)
+    (Paused  remain  played, PlayPause) -> (Clock, Playing remain played)
+    (Paused  remain  played, Stop)      -> (NoEvent, Stopped (combine remain played))
+    (Playing remain  played, PlayPause) -> (notesOff, Paused remain played)
+    (Playing remain  played, Stop)      -> (notesOff, Stopped (combine remain played))
+    (Playing []      played, Tick)      -> (notesOff, Stopped $ reverse played)
+    (Playing l@(x:_) played, Tick)      ->
+      let (ps, remain') = span ((== fst x) . fst) l
+      in (Midi ps, Playing remain' (reverse ps <> played))
+    _ -> (NoEvent, status)
   where
     combine = foldl (flip (:))
-    notesOff :: [PlayerEvent]
-    notesOff = [Midi $ Right $ PM.PMMsg (0xB0 + n) 0x7B 0 | n <- [0..15]]
+    notesOff :: PlayerEvent
+    notesOff = Midi [(0, Right $ PM.PMMsg (0xB0 + n) 0x7B 0) | n <- [0..15]]
+  
+midiPlayer
+  :: (MonadAsync m)
+  => SerialT m UICmd -> SerialT m PlayerEvent
+midiPlayer = S.map fst . S.scanl' midiPlayerStep (NoEvent, Stopped [])
 
 mpAction :: MonadAsync m => MVar UICmd -> MVar Int -> SerialT m UICmd
 mpAction cmdVar streamIdxVar = S.repeatM $ liftIO getCmd
@@ -224,11 +220,11 @@ main = do
       let outputHandler' :: MonadAsync m => PlayerEvent -> SerialT m ()
           outputHandler' = outputHandler streamIdxVar (fmap snd streams)
           peHandler :: (MonadIO m, MonadAsync m) => PlayerEvent -> SerialT m ()
-          peHandler ev = clockHandler clkVar ev `parallel` outputHandler' ev
+          peHandler ev = clockHandler clkVar ev >>= outputHandler'
           mpActions = mpClock clkVar `parallel` mpAction cmdVar streamIdxVar 
-          runMidiPlayer :: StateT MidiPlayerStatus IO ()
+          runMidiPlayer :: IO ()
           runMidiPlayer = S.drain $ midiPlayer mpActions >>= peHandler
-      _ <- forkIO $ void $ runStateT runMidiPlayer (Stopped [])
+      _ <- forkIO runMidiPlayer
 
       htmlGUI cmdVar (fmap fst streams)
       exitSuccess
