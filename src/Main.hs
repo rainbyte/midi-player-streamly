@@ -135,7 +135,7 @@ htmlGUI cmdVar portNames = void $ do
       joinTimed :: [(a, b)] -> (a, [b])
       joinTimed []      = error "Should not happen"
       joinTimed l@(x:_) = (fst x, fmap snd l)
-  enqueueCmd = putMVar cmdVar
+  enqueueCmd = void . forkIO . putMVar cmdVar
 
 outputHandler
   :: MonadAsync m
