@@ -1,7 +1,5 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE QuasiQuotes #-}
-{-# LANGUAGE ViewPatterns #-}
 
 module Main where
 
@@ -14,11 +12,6 @@ import           Data.Function (on)
 import           Data.List (groupBy)
 import           Data.Maybe (catMaybes)
 import qualified Data.Text as T
-import qualified Data.Text.Read as TR
-import           Data.Time.Clock
-
-import qualified Graphics.UI.Webviewhs as WHS
-import           Language.Javascript.JMacro
 
 import qualified Sound.MIDI.File as MidiFile
 import qualified Sound.MIDI.File.Load as MidiFile.Load
@@ -33,11 +26,14 @@ import           System.Directory
 import           System.Exit
 
 
+import           HtmlGUI (UICmd, htmlGUI)
+import qualified HtmlGUI as UI
+
+
 type MidiCmd = Either String PM.PMMsg
 type MidiTimed = (Rational, [MidiCmd])
 
-data UICmd = SelPort Int | LoadMidi ![MidiTimed] | PlayPause | Stop | Tick
-  deriving Show
+data PlayerInput = LoadMidi ![MidiTimed] | PlayPause | Stop | Tick
 
 data PlayerEvent = NoEvent | Clock | Midi !MidiTimed
   deriving Show
@@ -66,76 +62,6 @@ midiFromPath path = do
     putStrLn $ "File " ++ path ++ " does not exist"
     putStrLn "Try again..."
     pure Nothing
-  
-htmlGUI :: MVar UICmd -> [String] -> IO ()
-htmlGUI cmdVar portNames = void $ do
-  dir <- getCurrentDirectory
-  eitherWindow <- WHS.createWindow (windowParams dir) windowCallback
-  case eitherWindow of
-    Left  _      -> pure ()
-    Right window -> do
-      windowSetup window
-      windowLoop window
-      windowCleanup window
-      WHS.terminateWindowLoop window
-      WHS.destroyWindow window
-  where
-  windowLoop :: WHS.Window a -> IO ()
-  windowLoop window = do
-    timeIni <- getCurrentTime
-    shouldContinue  <- WHS.iterateWindowLoop window False
-    timeEnd <- getCurrentTime
-    let fps = 120
-        elapsed = realToFrac (diffUTCTime timeEnd timeIni) :: Double
-        toMicros = (* 1000000)
-        nextFrame = floor $ toMicros (1/fps - elapsed)
-    -- print nextFrame
-    when shouldContinue $ do
-      when (nextFrame > 0) (threadDelay nextFrame)
-      windowLoop window
-  windowParams dir = WHS.WindowParams
-    { WHS.windowParamsTitle = "midi-player-hs"
-    , WHS.windowParamsUri = T.pack $ "file://" ++ dir ++ "/src/Main.html"
-    , WHS.windowParamsWidth = 600
-    , WHS.windowParamsHeight = 340
-    , WHS.windowParamsResizable = False
-    , WHS.windowParamsDebuggable = True
-    }
-  windowSetup window = do
-    putStrLn "Initialize GUI"
-    -- Add output ports to combobox
-    forM_ (indexed portNames) (uncurry addPort)
-    where
-    indexed = zip ([1..]::[Int])
-    addPort idx name = WHS.runJavaScript window
-      [jmacro| portAdd(`idx`, `name`); |]
-  windowCleanup _ = pure ()
-  windowCallback window msg = case msg of
-    "load"      -> WHS.withWindowOpenDialog
-      window "Open MIDI file" False openMidiFile
-    "playpause" -> enqueueCmd PlayPause
-    "stop"      -> enqueueCmd Stop
-    (parsePort -> Just idx) -> do
-      putStrLn $ "port" <> show idx
-      enqueueCmd (SelPort idx)
-    _ -> pure ()
-    where
-    parsePort = (textToInt =<<) . T.stripPrefix "port"
-    textToInt = rightToMaybe . fmap fst . TR.decimal
-    rightToMaybe = either (const Nothing) pure
-  openMidiFile filename = do
-    mMidifile <- midiFromPath $ T.unpack filename
-    case mMidifile of
-      Just midifile -> enqueueCmd (LoadMidi $ preprocess midifile)
-      Nothing -> pure ()
-    where
-      preprocess = fmap joinTimed . groupByTime . fromMidiFileRelative
-      groupByTime :: Eq a => [(a, b)] -> [[(a, b)]]
-      groupByTime = groupBy ((==) `on` fst)
-      joinTimed :: [(a, b)] -> (a, [b])
-      joinTimed []      = error "Should not happen"
-      joinTimed l@(x:_) = (fst x, fmap snd l)
-  enqueueCmd = void . forkIO . putMVar cmdVar
 
 outputHandler
   :: MonadAsync m
@@ -158,17 +84,17 @@ outputHandler streamIdxVar streams ev =
 
 clockHandler
   :: MonadAsync m
-  => MVar UICmd -> PlayerEvent -> SerialT m PlayerEvent
+  => MVar () -> PlayerEvent -> SerialT m PlayerEvent
 clockHandler cmdVar ev = do
   liftIO $ case ev of
     Midi (t, _) -> do
       threadDelay (round $ t * (10^(6::Int)))
-      putMVar cmdVar Tick
-    Clock -> putMVar cmdVar Tick
+      putMVar cmdVar ()
+    Clock -> putMVar cmdVar ()
     _ -> pure ()
   pure ev
 
-midiPlayerStep :: (PlayerEvent, MidiPlayerStatus) -> UICmd -> (PlayerEvent, MidiPlayerStatus)
+midiPlayerStep :: (PlayerEvent, MidiPlayerStatus) -> PlayerInput -> (PlayerEvent, MidiPlayerStatus)
 midiPlayerStep (_, status) cmd =
   case (status, cmd) of
     (_, LoadMidi l) -> (notesOff, Stopped l)
@@ -188,23 +114,37 @@ midiPlayerStep (_, status) cmd =
   
 midiPlayer
   :: (MonadAsync m)
-  => SerialT m UICmd -> SerialT m PlayerEvent
+  => SerialT m PlayerInput -> SerialT m PlayerEvent
 midiPlayer = S.map fst . S.scanl' midiPlayerStep (NoEvent, Stopped [])
 
-mpAction :: MonadAsync m => MVar UICmd -> MVar Int -> SerialT m UICmd
+mpAction :: MonadAsync m => MVar UICmd -> MVar Int -> SerialT m PlayerInput
 mpAction cmdVar streamIdxVar = S.repeatM $ liftIO getCmd
   where
   getCmd = do
     ev <- takeMVar cmdVar
     case ev of
-      (SelPort idx) -> do
+      (UI.SelPort idx) -> do
         putStrLn $ "SelPort " ++ show idx
         _ <- swapMVar streamIdxVar idx
         getCmd
-      _             -> pure ev
-
-mpClock :: MonadAsync m => MVar UICmd -> SerialT m UICmd
-mpClock = S.repeatM . liftIO . takeMVar
+      (UI.LoadMidi path) -> openMidiFile path
+      UI.PlayPause -> pure PlayPause
+      UI.Stop -> pure Stop
+  openMidiFile filename = do
+    mMidifile <- midiFromPath $ T.unpack filename
+    case mMidifile of
+      Just midifile -> pure (LoadMidi $ preprocess midifile)
+      Nothing -> getCmd
+    where
+      preprocess = fmap joinTimed . groupByTime . fromMidiFileRelative
+      groupByTime :: Eq a => [(a, b)] -> [[(a, b)]]
+      groupByTime = groupBy ((==) `on` fst)
+      joinTimed :: [(a, b)] -> (a, [b])
+      joinTimed []      = error "Should not happen"
+      joinTimed l@(x:_) = (fst x, fmap snd l)
+    
+mpClock :: MonadAsync m => MVar () -> SerialT m PlayerInput
+mpClock = S.repeatM . (*> pure Tick) . liftIO . takeMVar
 
 main :: IO ()
 main = do
