@@ -111,7 +111,7 @@ midiPlayerStep (_, status) cmd =
     combine = foldl (flip (:))
     notesOff :: PlayerEvent
     notesOff = Midi (0, [Right $ PM.PMMsg (0xB0 + n) 0x7B 0 | n <- [0..15]])
-  
+
 midiPlayer
   :: (MonadAsync m)
   => SerialT m PlayerInput -> SerialT m PlayerEvent
@@ -142,7 +142,7 @@ mpAction cmdVar streamIdxVar = S.repeatM $ liftIO getCmd
       joinTimed :: [(a, b)] -> (a, [b])
       joinTimed []      = error "Should not happen"
       joinTimed l@(x:_) = (fst x, fmap snd l)
-    
+
 mpClock :: MonadAsync m => MVar () -> SerialT m PlayerInput
 mpClock = S.repeatM . (*> pure Tick) . liftIO . takeMVar
 
@@ -167,7 +167,7 @@ main = do
           outputHandler' = outputHandler streamIdxVar (fmap snd streams)
           peHandler :: (MonadIO m, MonadAsync m) => PlayerEvent -> SerialT m ()
           peHandler ev = clockHandler clkVar ev >>= outputHandler'
-          mpActions = mpClock clkVar `parallel` mpAction cmdVar streamIdxVar 
+          mpActions = mpClock clkVar `parallel` mpAction cmdVar streamIdxVar
           runMidiPlayer :: IO ()
           runMidiPlayer = S.drain $ midiPlayer mpActions >>= peHandler
       _ <- forkIO runMidiPlayer
