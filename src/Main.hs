@@ -10,6 +10,8 @@ import           Control.Monad
 import           Control.Monad.State
 
 import qualified Data.ByteString.Lazy as BL
+import           Data.Function (on)
+import           Data.List (groupBy)
 import           Data.Maybe (catMaybes)
 import qualified Data.Text as T
 import qualified Data.Text.Read as TR
@@ -32,13 +34,18 @@ import           System.Exit
 
 
 type MidiCmd = Either String PM.PMMsg
-type MidiTimed = (Rational, MidiCmd)
+type MidiTimed = (Rational, [MidiCmd])
 
 data UICmd = SelPort Int | LoadMidi ![MidiTimed] | PlayPause | Stop | Tick
   deriving Show
 
-data PlayerEvent = NoEvent | Clock | Midi ![MidiTimed]
+data PlayerEvent = NoEvent | Clock | Midi !MidiTimed
   deriving Show
+
+data MidiPlayerStatus
+  = Playing ![MidiTimed] ![MidiTimed]
+  | Paused  ![MidiTimed] ![MidiTimed]
+  | Stopped ![MidiTimed]
 
 midiFromPath :: String -> IO (Maybe MidiFile.T)
 midiFromPath path = do
@@ -119,8 +126,15 @@ htmlGUI cmdVar portNames = void $ do
   openMidiFile filename = do
     mMidifile <- midiFromPath $ T.unpack filename
     case mMidifile of
-      Just midifile -> enqueueCmd (LoadMidi $ fromMidiFileRelative midifile)
+      Just midifile -> enqueueCmd (LoadMidi $ preprocess midifile)
       Nothing -> pure ()
+    where
+      preprocess = fmap joinTimed . groupByTime . fromMidiFileRelative
+      groupByTime :: Eq a => [(a, b)] -> [[(a, b)]]
+      groupByTime = groupBy ((==) `on` fst)
+      joinTimed :: [(a, b)] -> (a, [b])
+      joinTimed []      = error "Should not happen"
+      joinTimed l@(x:_) = (fst x, fmap snd l)
   enqueueCmd = putMVar cmdVar
 
 outputHandler
@@ -129,36 +143,30 @@ outputHandler
   -> PlayerEvent -> SerialT m ()
 outputHandler streamIdxVar streams ev =
   liftIO $ case ev of
-    Midi cmds -> do
+    Midi (_, cmds) -> do
       streamIdx <- readMVar streamIdxVar
       let stream = streams !! streamIdx
       mapM_ (handleMidiCmd stream) cmds
     _ -> pure ()
   where
-    handleMidiCmd stream (_, Right msg) = do
+    handleMidiCmd stream (Right msg) = do
       eErr <- PM.writeShort stream (PM.PMEvent (PM.encodeMsg msg) 0)
       case eErr of
         Right _  -> pure ()
         Left err -> putStrLn $ "Error: " ++ show err
-    handleMidiCmd _ (_, Left str) = putStrLn ("Output: " ++ str)
+    handleMidiCmd _ (Left str) = putStrLn ("Output: " ++ str)
 
 clockHandler
   :: MonadAsync m
   => MVar UICmd -> PlayerEvent -> SerialT m PlayerEvent
 clockHandler cmdVar ev = do
   liftIO $ case ev of
-    Midi (x:_) -> do
-      let t = fst x
+    Midi (t, _) -> do
       threadDelay (round $ t * (10^(6::Int)))
       putMVar cmdVar Tick
     Clock -> putMVar cmdVar Tick
     _ -> pure ()
   pure ev
-
-data MidiPlayerStatus
-  = Playing ![MidiTimed] ![MidiTimed]
-  | Paused  ![MidiTimed] ![MidiTimed]
-  | Stopped ![MidiTimed]
 
 midiPlayerStep :: (PlayerEvent, MidiPlayerStatus) -> UICmd -> (PlayerEvent, MidiPlayerStatus)
 midiPlayerStep (_, status) cmd =
@@ -171,14 +179,12 @@ midiPlayerStep (_, status) cmd =
     (Playing remain  played, PlayPause) -> (notesOff, Paused remain played)
     (Playing remain  played, Stop)      -> (notesOff, Stopped (combine remain played))
     (Playing []      played, Tick)      -> (notesOff, Stopped $ reverse played)
-    (Playing l@(x:_) played, Tick)      ->
-      let (ps, remain') = span ((== fst x) . fst) l
-      in (Midi ps, Playing remain' (reverse ps <> played))
+    (Playing (x:xs)  played, Tick)      -> (Midi x, Playing xs (x:played))
     _ -> (NoEvent, status)
   where
     combine = foldl (flip (:))
     notesOff :: PlayerEvent
-    notesOff = Midi [(0, Right $ PM.PMMsg (0xB0 + n) 0x7B 0) | n <- [0..15]]
+    notesOff = Midi (0, [Right $ PM.PMMsg (0xB0 + n) 0x7B 0 | n <- [0..15]])
   
 midiPlayer
   :: (MonadAsync m)
