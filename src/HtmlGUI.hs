@@ -59,7 +59,7 @@ htmlGUI cmdVar portNames = void $ do
     -- Add output ports to combobox
     forM_ (indexed portNames) (uncurry addPort)
     where
-    indexed = zip ([1..]::[Int])
+    indexed = zip ([0..]::[Int])
     addPort idx name = WHS.runJavaScript window
       [jmacro| portAdd(`idx`, `name`); |]
   windowCleanup _ = pure ()

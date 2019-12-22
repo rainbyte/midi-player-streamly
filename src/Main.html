@@ -27,6 +27,7 @@
                 window.external.invoke(value);
             }
             function portAdd(idx, name) {
+                console.log("add port idx=" + idx + " name=" + name);
                 var select = document.getElementById("select-port");
                 var option = document.createElement("option");
                 option.value = idx;
@@ -35,7 +36,7 @@
             }
             function portSel() {
                 var select = document.getElementById("select-port");
-                var idx = select.selectedIndex;
+                var idx = select.value;
                 var content = select.options[idx].innerHTML;
                 console.log("port"+idx);
                 window.external.invoke("port" + idx);
