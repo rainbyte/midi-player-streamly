@@ -1,0 +1,14 @@
+{
+    "name": "midi-player-hs",
+    "version": "0.1.0",
+    "main": "index.js",
+    "scripts": {
+        "build": "webpack --config ./webpack.config.js --progress --profile --colors"
+    },
+    "devDependencies": {
+        "svelte": "^3.16.5",
+        "svelte-loader": "^2.13.6",
+        "webpack": "^4.41.2",
+        "webpack-cli": "3.3.10"
+    }
+}
