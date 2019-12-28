@@ -20,8 +20,13 @@ import           System.Directory
 data UICmd = SelPort Int | LoadMidi T.Text | PlayPause | Stop
   deriving Show
 
-htmlGUI :: MVar UICmd -> [String] -> IO ()
-htmlGUI cmdVar portNames = void $ do
+data UIStatus = UIStatus
+  { progress :: Double
+  , display :: String
+  }
+
+htmlGUI :: MVar UIStatus -> MVar UICmd -> [String] -> IO ()
+htmlGUI statusVar cmdVar portNames = void $ do
   dir <- getCurrentDirectory
   eitherWindow <- WHS.createWindow (windowParams dir) windowCallback
   case eitherWindow of
@@ -36,6 +41,8 @@ htmlGUI cmdVar portNames = void $ do
   windowLoop :: WHS.Window a -> IO ()
   windowLoop window = do
     timeIni <- getCurrentTime
+    status <- readMVar statusVar
+    _ <- WHS.runJavaScript window [jmacro| setStatus(`display status`,`progress status`); |]
     shouldContinue  <- WHS.iterateWindowLoop window False
     timeEnd <- getCurrentTime
     let fps = 120
@@ -50,7 +57,7 @@ htmlGUI cmdVar portNames = void $ do
     { WHS.windowParamsTitle = "midi-player-hs"
     , WHS.windowParamsUri = T.pack $ "file://" ++ dir ++ "/src/Main.html"
     , WHS.windowParamsWidth = 600
-    , WHS.windowParamsHeight = 340
+    , WHS.windowParamsHeight = 374
     , WHS.windowParamsResizable = False
     , WHS.windowParamsDebuggable = True
     }

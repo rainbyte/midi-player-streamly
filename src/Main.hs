@@ -33,9 +33,9 @@ import qualified HtmlGUI as UI
 type MidiCmd = Either String PM.PMMsg
 type MidiTimed = (Rational, [MidiCmd])
 
-data PlayerInput = LoadMidi ![MidiTimed] | PlayPause | Stop | Tick
+data PlayerInput = LoadMidi ![MidiTimed] | PlayPause | Stop | Tick | PProgress
 
-data PlayerEvent = NoEvent | Clock | Midi !MidiTimed
+data PlayerEvent = NoEvent | Clock | Midi !MidiTimed | Progress Rational String
   deriving Show
 
 data MidiPlayerStatus
@@ -65,14 +65,15 @@ midiFromPath path = do
 
 outputHandler
   :: MonadAsync m
-  => MVar Int -> [PM.PMStream]
+  => MVar () -> MVar Int -> [PM.PMStream]
   -> PlayerEvent -> SerialT m ()
-outputHandler streamIdxVar streams ev =
+outputHandler progressSigVar streamIdxVar streams ev =
   liftIO $ case ev of
     Midi (_, cmds) -> do
       streamIdx <- readMVar streamIdxVar
       let stream = streams !! streamIdx
       mapM_ (handleMidiCmd stream) cmds
+      putMVar progressSigVar ()
     _ -> pure ()
   where
     handleMidiCmd stream (Right msg) = do
@@ -81,6 +82,17 @@ outputHandler streamIdxVar streams ev =
         Right _  -> pure ()
         Left err -> putStrLn $ "Error: " ++ show err
     handleMidiCmd _ (Left str) = putStrLn ("Output: " ++ str)
+
+progressHandler
+  :: MonadAsync m
+  => MVar UI.UIStatus -> PlayerEvent -> SerialT m ()
+progressHandler uiStatusVar ev =
+  liftIO $ case ev of
+    Progress pos msg -> modifyMVar_ uiStatusVar (newUiStatus pos msg)
+    _          -> pure ()
+  where
+    newUiStatus pos msg uiStatus = pure $ uiStatus
+      { UI.progress = fromRational pos, UI.display = msg }
 
 clockHandler
   :: MonadAsync m
@@ -99,15 +111,24 @@ midiPlayerStep (_, status) cmd =
   case (status, cmd) of
     (_, LoadMidi l) -> (notesOff, Stopped l)
     (Stopped remain        , PlayPause) -> (Clock, Playing remain [])
-    (Paused  []      played, PlayPause) -> (NoEvent, Stopped played)
+    (Stopped _             , PProgress) -> (Progress 0 "stopped", status)
+    (Paused  []      played, PlayPause) -> (notesOff, Stopped played)
     (Paused  remain  played, PlayPause) -> (Clock, Playing remain played)
-    (Paused  remain  played, Stop)      -> (NoEvent, Stopped (combine remain played))
+    (Paused  remain  played, Stop)      -> (notesOff, Stopped (combine remain played))
+    (Paused  remain  played, PProgress) -> (Progress (progress remain played) "paused", status)
     (Playing remain  played, PlayPause) -> (notesOff, Paused remain played)
     (Playing remain  played, Stop)      -> (notesOff, Stopped (combine remain played))
     (Playing []      played, Tick)      -> (notesOff, Stopped $ reverse played)
     (Playing (x:xs)  played, Tick)      -> (Midi x, Playing xs (x:played))
+    (Playing remain  played, PProgress) -> (Progress (progress remain played) "playing", status)
     _ -> (NoEvent, status)
   where
+    calcTime = sum . fmap fst
+    progress :: [MidiTimed] -> [MidiTimed] -> Rational
+    progress rs ps =
+      let ptime = calcTime ps
+          rtime = calcTime rs
+      in (100 * ptime) / (rtime + ptime)
     combine = foldl (flip (:))
     notesOff :: PlayerEvent
     notesOff = Midi (0, [Right $ PM.PMMsg (0xB0 + n) 0x7B 0 | n <- [0..15]])
@@ -146,6 +167,9 @@ mpAction cmdVar streamIdxVar = S.repeatM $ liftIO getCmd
 mpClock :: MonadAsync m => MVar () -> SerialT m PlayerInput
 mpClock = S.repeatM . (*> pure Tick) . liftIO . takeMVar
 
+mpProgress :: MonadAsync m => MVar () -> SerialT m PlayerInput
+mpProgress = S.repeatM . (*> pure PProgress) . liftIO . takeMVar
+
 main :: IO ()
 main = do
   _ <- PM.initialize
@@ -162,17 +186,21 @@ main = do
       streamIdxVar <- newMVar 0
       cmdVar <- newEmptyMVar
       clkVar <- newEmptyMVar
+      progressSigVar <- newEmptyMVar
+      uiStatusVar <- newMVar UI.UIStatus { UI.progress = 0, UI.display = "stopped" }
 
       let outputHandler' :: MonadAsync m => PlayerEvent -> SerialT m ()
-          outputHandler' = outputHandler streamIdxVar (fmap snd streams)
+          outputHandler' = outputHandler progressSigVar streamIdxVar (fmap snd streams)
+          progressHandler' :: MonadAsync m => PlayerEvent -> SerialT m ()
+          progressHandler' = progressHandler uiStatusVar
           peHandler :: (MonadIO m, MonadAsync m) => PlayerEvent -> SerialT m ()
-          peHandler ev = clockHandler clkVar ev >>= outputHandler'
-          mpActions = mpClock clkVar `parallel` mpAction cmdVar streamIdxVar
+          peHandler ev = clockHandler clkVar ev >>= (\x -> outputHandler' x `parallel` progressHandler' x)
+          mpActions = mpProgress progressSigVar `parallel` mpClock clkVar `parallel` mpAction cmdVar streamIdxVar
           runMidiPlayer :: IO ()
           runMidiPlayer = S.drain $ midiPlayer mpActions >>= peHandler
       _ <- forkIO runMidiPlayer
 
-      htmlGUI cmdVar (fmap fst streams)
+      htmlGUI uiStatusVar cmdVar (fmap fst streams)
       exitSuccess
     [] -> do
       _ <- error "Output device not available"

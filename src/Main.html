@@ -8,9 +8,31 @@
                 width: 100%;
                 height: 100%;
                 grid-template-columns: 172px 172px 172px;
-                grid-template-rows: 172px 50px;
+                grid-template-rows: 172px 25px 50px;
                 grid-column-gap: 9px;
                 grid-row-gap: 9px;
+            }
+            #status {
+                position: relative;
+                background-color: whitesmoke;
+                grid-column-start: 1;
+                grid-column-end: 4;
+                height: 25px;
+                border-radius: 4px;
+            }
+            #status-progress-bar {
+                position: absolute;
+                background-color: lightgrey;
+                height: 100%;
+                width: 0%;
+                border-radius: inherit;
+            }
+            #status-label {
+                position: absolute;
+                top: 50%;
+                left: 50%;
+                transform: translateX(-50%) translateY(-50%);
+                color: black;
             }
             input[type=button] {
                 font-size: 10vw;
@@ -41,6 +63,15 @@
                 console.log("port"+idx);
                 window.external.invoke("port" + idx);
             }
+            function setStatus(display, progressValue) {
+                let percentage = progressValue.toFixed(2);
+                progress = document.getElementById("status-progress-bar");
+                progress.style.width = percentage + "%";
+                label = document.getElementById("status-label");
+                label.innerText = percentage > 0
+                    ? `${percentage}% ${display.toUpperCase()}`
+                    : display.toUpperCase();
+            }
         </script>
     </head>
     <body>
@@ -48,6 +79,10 @@
             <input type="button" value="⏏" onclick="submit('load')">
             <input type="button" value="⏯" onclick="submit('playpause')">
             <input type="button" value="⏹" onclick="submit('stop')">
+            <div id="status">
+                <div id="status-progress-bar"></div>
+                <span id="status-label">Stopped</span>
+            </div>
             <select name="select-port" id="select-port" onchange="portSel()">
                 <!--
                 <option value="0">0. midi through</option>
