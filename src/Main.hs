@@ -112,7 +112,7 @@ midiPlayerStep (_, status) cmd =
     (_, LoadMidi l) -> (notesOff, Stopped l)
     (Stopped remain        , PlayPause) -> (Clock, Playing remain [])
     (Stopped _             , PProgress) -> (Progress 0 "stopped", status)
-    (Paused  []      played, PlayPause) -> (notesOff, Stopped played)
+    (Paused  []      played, PlayPause) -> (notesOff, Stopped $ reverse played)
     (Paused  remain  played, PlayPause) -> (Clock, Playing remain played)
     (Paused  remain  played, Stop)      -> (notesOff, Stopped (combine remain played))
     (Paused  remain  played, PProgress) -> (Progress (progress remain played) "paused", status)
